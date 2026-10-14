@@ -1,5 +1,5 @@
 ---
-name: math-solver
+name: math-solver2
 description: Solve any math problem step by step and verify the answer. Use for arithmetic, percentages, fractions, algebra, equations, inequalities, geometry, trigonometry, calculus (derivatives, integrals, limits), probability, statistics, sequences, unit conversion, and word problems.
 ---
 
