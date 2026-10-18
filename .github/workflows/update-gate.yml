@@ -1,0 +1,76 @@
+name: Update VPN Gate SSTP list
+on:
+  schedule:
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Collect and commit
+        shell: bash
+        run: |
+          python - <<'PY'
+          from html.parser import HTMLParser
+          from urllib.request import Request, urlopen
+          from pathlib import Path
+          import re, time
+
+          class Parser(HTMLParser):
+              def __init__(self):
+                  super().__init__(convert_charrefs=True)
+                  self.p = None
+                  self.items = []
+              def handle_starttag(self, tag, attrs):
+                  if tag == "p": self.p = []
+                  elif tag == "br" and self.p is not None: self.p.append(" ")
+              def handle_data(self, data):
+                  if self.p is not None: self.p.append(data)
+              def handle_endtag(self, tag):
+                  if tag != "p" or self.p is None: return
+                  text = " ".join("".join(self.p).split())
+                  self.p = None
+                  label = re.match(r"^SSTP\s+Hostname\s*:\s*(.*)$", text, re.I)
+                  if label:
+                      m = re.fullmatch(r"([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.opengw\.net)(?::(\d{1,5}))?", label[1], re.I)
+                      if not m: raise ValueError("Unexpected SSTP hostname")
+                      port = int(m[2] or 443)
+                      if not 1 <= port <= 65535: raise ValueError("Invalid port")
+                      self.items.append(f"{m[1].lower()}:{port}")
+
+          html = None
+          for attempt in range(3):
+              try:
+                  req = Request("https://www.vpngate.net/en/", headers={"User-Agent": "Mozilla/5.0"})
+                  with urlopen(req, timeout=60) as response:
+                      html = response.read(5000001).decode("utf-8-sig")
+                  if len(html) > 5000000: raise ValueError("Page too large")
+                  break
+              except Exception:
+                  if attempt == 2: raise
+                  time.sleep(5 * (attempt + 1))
+
+          parser = Parser()
+          parser.feed(html)
+          parser.close()
+          hosts = list(dict.fromkeys(parser.items))
+          labels = re.findall(r"SSTP\s+Hostname\s*:", html, re.I)
+          if not hosts or len(labels) != len(parser.items):
+              raise ValueError("No or incomplete SSTP list")
+          Path("Gate.txt.tmp").write_text("\n".join(hosts) + "\n", encoding="utf-8")
+          Path("Gate.txt.tmp").replace("Gate.txt")
+          PY
+          if git diff --quiet -- Gate.txt; then
+            echo "Gate.txt unchanged"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Gate.txt
+          git commit -m 'Update VPN Gate SSTP endpoints'
+          git push origin HEAD:main
