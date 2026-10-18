@@ -1,76 +1,150 @@
 name: Update VPN Gate SSTP list
+
 on:
   schedule:
+    # 05:30 UTC = 09:00 Asia/Tehran. GitHub may delay scheduled runs.
     - cron: '30 5 * * *'
   workflow_dispatch:
+
 permissions:
   contents: write
+
+concurrency:
+  group: update-vpngate-gate-txt
+  cancel-in-progress: false
+
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out main
+        uses: actions/checkout@v4
         with:
           ref: main
-      - name: Collect and commit
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Fetch all published SSTP endpoints with their advertised ports
         shell: bash
         run: |
-          python - <<'PY'
-          from html.parser import HTMLParser
-          from urllib.request import Request, urlopen
-          from pathlib import Path
-          import re, time
+          python - <<'PYTHON'
+          #!/usr/bin/env python3
+          """Export every SSTP endpoint published in VPN Gate's current server list.
 
-          class Parser(HTMLParser):
+          A missing port in the SSTP Hostname field means the default port, 443.
+          No ping, DNS, or connection test is used to filter servers.
+          """
+          from html.parser import HTMLParser
+          from pathlib import Path
+          import re
+          import time
+          from urllib.request import Request, urlopen
+
+          SOURCE = "https://www.vpngate.net/en/"
+          ENDPOINT = re.compile(
+              r"([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.opengw\.net)(?::([0-9]{1,5}))?",
+              re.I,
+          )
+
+          class SSTPParser(HTMLParser):
               def __init__(self):
                   super().__init__(convert_charrefs=True)
-                  self.p = None
-                  self.items = []
+                  self.paragraph = None
+                  self.endpoints = []
+
               def handle_starttag(self, tag, attrs):
-                  if tag == "p": self.p = []
-                  elif tag == "br" and self.p is not None: self.p.append(" ")
+                  if tag == "p":
+                      self.paragraph = []
+                  elif tag == "br" and self.paragraph is not None:
+                      self.paragraph.append(" ")
+
               def handle_data(self, data):
-                  if self.p is not None: self.p.append(data)
+                  if self.paragraph is not None:
+                      self.paragraph.append(data)
+
               def handle_endtag(self, tag):
-                  if tag != "p" or self.p is None: return
-                  text = " ".join("".join(self.p).split())
-                  self.p = None
+                  if tag != "p" or self.paragraph is None:
+                      return
+                  text = " ".join("".join(self.paragraph).split())
+                  self.paragraph = None
                   label = re.match(r"^SSTP\s+Hostname\s*:\s*(.*)$", text, re.I)
-                  if label:
-                      m = re.fullmatch(r"([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.opengw\.net)(?::(\d{1,5}))?", label[1], re.I)
-                      if not m: raise ValueError("Unexpected SSTP hostname")
-                      port = int(m[2] or 443)
-                      if not 1 <= port <= 65535: raise ValueError("Invalid port")
-                      self.items.append(f"{m[1].lower()}:{port}")
+                  if not label:
+                      return
+                  match = ENDPOINT.fullmatch(label.group(1))
+                  if not match:
+                      raise ValueError(f"Unexpected SSTP endpoint: {label.group(1)!r}")
+                  host, port_text = match.groups()
+                  port = int(port_text) if port_text is not None else 443
+                  if not 1 <= port <= 65535:
+                      raise ValueError(f"Invalid SSTP port: {port}")
+                  self.endpoints.append(f"{host.lower()}:{port}")
 
-          html = None
-          for attempt in range(3):
-              try:
-                  req = Request("https://www.vpngate.net/en/", headers={"User-Agent": "Mozilla/5.0"})
-                  with urlopen(req, timeout=60) as response:
-                      html = response.read(5000001).decode("utf-8-sig")
-                  if len(html) > 5000000: raise ValueError("Page too large")
-                  break
-              except Exception:
-                  if attempt == 2: raise
-                  time.sleep(5 * (attempt + 1))
+          def parse_endpoints(html):
+              parser = SSTPParser()
+              parser.feed(html)
+              parser.close()
+              endpoints = list(dict.fromkeys(parser.endpoints))
+              if not endpoints:
+                  raise ValueError("No SSTP endpoints found; keeping existing Gate.txt unchanged")
+              labels = len(re.findall(r"SSTP\s+Hostname\s*:", html, re.I))
+              if labels != len(parser.endpoints):
+                  raise ValueError("SSTP markup changed; keeping existing Gate.txt unchanged")
+              return endpoints
 
-          parser = Parser()
-          parser.feed(html)
-          parser.close()
-          hosts = list(dict.fromkeys(parser.items))
-          labels = re.findall(r"SSTP\s+Hostname\s*:", html, re.I)
-          if not hosts or len(labels) != len(parser.items):
-              raise ValueError("No or incomplete SSTP list")
-          Path("Gate.txt.tmp").write_text("\n".join(hosts) + "\n", encoding="utf-8")
-          Path("Gate.txt.tmp").replace("Gate.txt")
-          PY
+          def fetch_endpoints():
+              for attempt in range(3):
+                  try:
+                      request = Request(
+                          SOURCE,
+                          headers={
+                              "User-Agent": "VPNGate-SSTP-List-Updater/1.0",
+                              "Cache-Control": "no-cache",
+                          },
+                      )
+                      with urlopen(request, timeout=60) as response:
+                          if response.status != 200:
+                              raise RuntimeError(f"Unexpected HTTP status: {response.status}")
+                          html = response.read(5_000_001)
+                      if len(html) > 5_000_000:
+                          raise ValueError("Unexpectedly large server list")
+                      return parse_endpoints(html.decode("utf-8-sig"))
+                  except Exception:
+                      if attempt == 2:
+                          raise
+                      time.sleep(5 * (attempt + 1))
+
+          endpoints = fetch_endpoints()
+          target = Path("Gate.txt")
+          temporary = target.with_suffix(".txt.tmp")
+          temporary.write_text("\n".join(endpoints) + "\n", encoding="utf-8")
+          temporary.replace(target)
+          print(f"Wrote {len(endpoints)} SSTP endpoints to {target}")
+          PYTHON
+
+      - name: Commit Gate.txt only when changed
+        shell: bash
+        run: |
+          set -euo pipefail
           if git diff --quiet -- Gate.txt; then
-            echo "Gate.txt unchanged"
+            echo "Gate.txt is already up to date."
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Gate.txt
+          git add -- Gate.txt
           git commit -m 'Update VPN Gate SSTP endpoints'
-          git push origin HEAD:main
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git rebase origin/main
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'Unable to push Gate.txt after three attempts.' >&2
+          exit 1
