@@ -6,7 +6,7 @@ on:
   workflow_dispatch: # اجرای دستی
 
 permissions:
-  contents: write # برای کامیت کردن خروجی در مخزن خودتان
+  contents: write
 
 jobs:
   test-configs:
@@ -17,22 +17,13 @@ jobs:
 
       - name: Install xray-knife
         run: |
-          set -e # توقف در صورت بروز خطا
+          set -e
           wget -q https://github.com/lilendian0x00/xray-knife/releases/latest/download/Xray-knife-linux-64.zip
           unzip -o -q Xray-knife-linux-64.zip
-          
-          # پیدا کردن فایل اجرایی xray-knife در هر مسیری که استخراج شده باشد
           BINARY_PATH=$(find . -name "xray-knife" -type f | head -n 1)
-          
-          if [ -z "$BINARY_PATH" ]; then
-            echo "❌ فایل اجرایی xray-knife پیدا نشد!"
-            exit 1
-          fi
-          
+          if [ -z "$BINARY_PATH" ]; then echo "❌ فایل اجرایی پیدا نشد!"; exit 1; fi
           chmod +x "$BINARY_PATH"
           sudo mv "$BINARY_PATH" /usr/local/bin/xray-knife
-          
-          echo "✅ نصب با موفقیت انجام شد."
           xray-knife --version
 
       - name: Add subscriptions
@@ -46,12 +37,29 @@ jobs:
           xray-knife subs fetch --all
           echo "📥 تعداد کانفیگ دریافت‌شده: $(wc -l < configs.txt)"
 
-      - name: Test configs
+      - name: Test configs and filter top 200
+        id: test_step
         run: |
-          xray-knife http -f configs.txt -o config.txt
-          echo "✅ تعداد کانفیگ سالم: $(wc -l < config.txt)"
+          # اجرای تست (با || true تا در صورت صفر بودن نتایج، ورک‌فلو کرش نکند)
+          xray-knife http -f configs.txt -o tested_configs.txt || true
+          
+          # شمارش کانفیگ‌های سالم (فقط خطوطی که حاوی :// هستند)
+          HEALTHY_COUNT=$(grep -c '://' tested_configs.txt || true)
+          echo "✅ تعداد کانفیگ سالم تست‌شده: $HEALTHY_COUNT"
+          
+          # بررسی شرط کمتر از ۵ بودن
+          if [ "$HEALTHY_COUNT" -lt 5 ]; then
+            echo "⚠️ تعداد کانفیگ‌های سالم کمتر از ۵ عدد است. عملیات پوش لغو شد."
+            echo "skip_push=true" >> "$GITHUB_OUTPUT"
+          else
+            # استخراج ۲۰۰ مورد برتر (چون خروجی از قبل بر اساس سرعت مرتب شده است)
+            head -n 200 tested_configs.txt > config.txt
+            echo "🎯 تعداد نهایی کانفیگ‌های برتر ذخیره‌شده: $(wc -l < config.txt)"
+            echo "skip_push=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Commit and push results
+        if: steps.test_step.outputs.skip_push == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -59,7 +67,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "⚠️ فایل config.txt تغییری نکرده است."
           else
-            git commit -m "Update working Xray configs [skip ci]"
+            git commit -m "Update top 200 working Xray configs [skip ci]"
             git push
             echo "✅ فایل config.txt با موفقیت به‌روزرسانی شد."
           fi
