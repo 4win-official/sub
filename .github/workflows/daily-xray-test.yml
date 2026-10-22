@@ -2,11 +2,12 @@ name: Daily Xray Config Tester
 
 on:
   schedule:
-    - cron: '0 0 * * *' # هر روز نیمه‌شب UTC
-  workflow_dispatch: # اجرای دستی
+    # هر روز ساعت 00:00 UTC (۳:۳۰ بامداد به وقت ایران)
+    - cron: '0 0 * * *'
+  workflow_dispatch: # امکان اجرای دستی از تب Actions
 
 permissions:
-  contents: write # برای کامیت کردن خروجی در مخزن خودتان
+  contents: write # برای کامیت کردن فایل خروجی در مخزن خودتان
 
 jobs:
   test-configs:
@@ -18,7 +19,7 @@ jobs:
       - name: Install xray-knife
         run: |
           wget -q https://github.com/lilendian0x00/xray-knife/releases/latest/download/Xray-knife-linux-64.zip
-          unzip -q Xray-knife-linux-64.zip
+          unzip -o -q Xray-knife-linux-64.zip
           cd Xray-knife-linux
           chmod +x xray-knife
           sudo mv xray-knife /usr/local/bin/
