@@ -1,0 +1,54 @@
+name: Daily Xray Config Tester
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # هر روز نیمه‌شب UTC
+  workflow_dispatch: # اجرای دستی
+
+permissions:
+  contents: write # برای کامیت کردن خروجی در مخزن خودتان
+
+jobs:
+  test-configs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install xray-knife
+        run: |
+          wget -q https://github.com/lilendian0x00/xray-knife/releases/latest/download/Xray-knife-linux-64.zip
+          unzip -q Xray-knife-linux-64.zip
+          cd Xray-knife-linux
+          chmod +x xray-knife
+          sudo mv xray-knife /usr/local/bin/
+          xray-knife --version
+
+      - name: Add subscriptions
+        run: |
+          xray-knife subs add --url "https://raw.githubusercontent.com/hamedp-71/Sub_Checker_Creator/refs/heads/main/final.txt" --remark "hamedp"
+          xray-knife subs add --url "https://raw.githubusercontent.com/ShadowException/VPN/refs/heads/main/configs/VPN-cat" --remark "ShadowVPN"
+          xray-knife subs add --url "https://raw.githubusercontent.com/4win-official/sub/refs/heads/main/config.txt" --remark "4win"
+
+      - name: Fetch all configs
+        run: |
+          xray-knife subs fetch --all
+          echo "📥 تعداد کانفیگ دریافت‌شده: $(wc -l < configs.txt)"
+
+      - name: Test configs
+        run: |
+          xray-knife http -f configs.txt -o config.txt
+          echo "✅ تعداد کانفیگ سالم: $(wc -l < config.txt)"
+
+      - name: Commit and push results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add config.txt
+          if git diff --cached --quiet; then
+            echo "⚠️ فایل config.txt تغییری نکرده است."
+          else
+            git commit -m "Update working Xray configs [skip ci]"
+            git push
+            echo "✅ فایل config.txt با موفقیت به‌روزرسانی شد."
+          fi
